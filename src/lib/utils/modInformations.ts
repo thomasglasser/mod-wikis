@@ -1,4 +1,4 @@
-export const MOD_VERSION = '1.0.0-beta14';
+export const MOD_VERSION = '1.0.0-beta15';
 
 export const getShortVersion = (version: string = MOD_VERSION): string => {
 	const match = version.match(/beta(\d+)/i);
