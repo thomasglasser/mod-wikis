@@ -1,96 +1,125 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import JSZip from 'jszip';
 
-const MINERACULOUS_DIR = process.env.MINERACULOUS_DIR || 'C:/Users/tjgla/IdeaProjects/Mineraculous';
-const EXPANSION_DIR = process.env.EXPANSION_DIR || 'C:/Users/tjgla/IdeaProjects/Mineraculous-Expansion-Kamikotizations';
-const STATIC_DIR = path.resolve('static');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = path.resolve(__dirname, '..');
 
-function addDirectoryToZip(zip, baseDir, zipPrefix) {
-    if (!fs.existsSync(baseDir)) {
-        console.warn(`Directory not found: ${baseDir}`);
-        return;
-    }
+const MINERACULOUS_ROOT = process.env.MINERACULOUS_DIR || path.resolve(REPO_ROOT, '../../IdeaProjects/Mineraculous');
+const EXPANSION_ROOT = process.env.EXPANSION_DIR || path.resolve(REPO_ROOT, '../../IdeaProjects/Mineraculous-Expansion-Kamikotizations');
+const STATIC_DIR = path.resolve(REPO_ROOT, 'static');
 
-    function walk(currentDir) {
-        const files = fs.readdirSync(currentDir, { withFileTypes: true });
-        for (const file of files) {
-            const fullPath = path.join(currentDir, file.name);
-            if (file.isDirectory()) {
-                walk(fullPath);
-            } else if (file.isFile()) {
-                const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
-                const zipPath = zipPrefix ? `${zipPrefix}/${relativePath}` : relativePath;
-                zip.file(zipPath, fs.readFileSync(fullPath));
-            }
-        }
-    }
+/**
+ * Recursively adds files from srcDir into the JSZip instance under zipPrefix.
+ * Ensures all zip paths strictly use forward slashes ('/').
+ */
+function addDirectoryToZip(zip, srcDir, zipPrefix) {
+	if (!fs.existsSync(srcDir)) {
+		console.warn(`[WARN] Source directory does not exist: ${srcDir}`);
+		return;
+	}
 
-    walk(baseDir);
+	function walk(dir) {
+		const entries = fs.readdirSync(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			const fullPath = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(fullPath);
+			} else if (entry.isFile()) {
+				const relativePath = path.relative(srcDir, fullPath).replace(/\\/g, '/');
+				const zipPath = zipPrefix ? `${zipPrefix}/${relativePath}` : relativePath;
+				zip.file(zipPath, fs.readFileSync(fullPath));
+			}
+		}
+	}
+
+	walk(srcDir);
 }
 
-async function packageZip(zipName, mappings) {
-    const zip = new JSZip();
-    for (const { src, prefix } of mappings) {
-        addDirectoryToZip(zip, src, prefix);
-    }
+async function buildZip(destFile, sections) {
+	const zip = new JSZip();
 
-    const fileCount = Object.keys(zip.files).filter(k => !zip.files[k].dir).length;
-    console.log(`Packaging ${zipName} (${fileCount} files)...`);
+	for (const { srcDir, zipPrefix } of sections) {
+		addDirectoryToZip(zip, srcDir, zipPrefix);
+	}
 
-    const content = await zip.generateAsync({
-        type: 'nodebuffer',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 9 }
-    });
+	const files = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
+	const backslashEntries = files.filter((name) => name.includes('\\'));
+	if (backslashEntries.length > 0) {
+		throw new Error(`Found ${backslashEntries.length} entries with backslashes in ${destFile}: ${backslashEntries.slice(0, 5).join(', ')}`);
+	}
 
-    const destPath = path.join(STATIC_DIR, zipName);
-    fs.writeFileSync(destPath, content);
-    console.log(`Wrote ${destPath} (${content.length} bytes)`);
+	console.log(`Packaging ${path.basename(destFile)} with ${files.length} files...`);
+
+	const content = await zip.generateAsync({
+		type: 'nodebuffer',
+		compression: 'DEFLATE',
+		compressionOptions: { level: 9 },
+	});
+
+	fs.writeFileSync(destFile, content);
+	console.log(`Successfully generated ${destFile} (${(content.length / 1024 / 1024).toFixed(2)} MB)`);
+
+	// Validation against mod-wikis predicates
+	const langFiles = files.filter((f) => f.includes('lang/'));
+	const categoryFiles = files.filter((f) => f.includes('modonomicon/books/wiki/categories/'));
+	const entryFiles = files.filter((f) => f.includes('modonomicon/books/wiki/entries/'));
+	const textureFiles = files.filter((f) => f.includes('textures/'));
+
+	console.log(`  - lang: ${langFiles.length}`);
+	console.log(`  - categories: ${categoryFiles.length}`);
+	console.log(`  - entries: ${entryFiles.length}`);
+	console.log(`  - textures: ${textureFiles.length}`);
+
+	if (langFiles.length === 0 || textureFiles.length === 0) {
+		throw new Error(`Validation failed for ${destFile}: missing required files!`);
+	}
 }
 
-async function run() {
-    // 1. Mineraculous
-    await packageZip('mineraculous.zip', [
-        {
-            src: path.join(MINERACULOUS_DIR, 'src/generated/resources/assets/mineraculous/lang'),
-            prefix: 'lang'
-        },
-        {
-            src: path.join(MINERACULOUS_DIR, 'src/generated/resources/data/mineraculous/modonomicon/books/wiki'),
-            prefix: 'modonomicon/books/wiki'
-        },
-        {
-            src: path.join(MINERACULOUS_DIR, 'src/main/resources/assets/mineraculous/textures'),
-            prefix: 'textures'
-        }
-    ]);
+async function main() {
+	// 1. mineraculous.zip
+	await buildZip(path.join(STATIC_DIR, 'mineraculous.zip'), [
+		{
+			srcDir: path.join(MINERACULOUS_ROOT, 'src/generated/resources/assets/mineraculous/lang'),
+			zipPrefix: 'lang',
+		},
+		{
+			srcDir: path.join(MINERACULOUS_ROOT, 'src/generated/resources/data/mineraculous/modonomicon/books/wiki'),
+			zipPrefix: 'modonomicon/books/wiki',
+		},
+		{
+			srcDir: path.join(MINERACULOUS_ROOT, 'src/main/resources/assets/mineraculous/textures'),
+			zipPrefix: 'textures',
+		},
+	]);
 
-    // 2. Mineraculous Expansion: Kamikotizations
-    let expansionWikiData = path.join(EXPANSION_DIR, 'src/generated/resources/data/mineraculous/modonomicon/books/wiki');
-    if (!fs.existsSync(expansionWikiData)) {
-        expansionWikiData = path.join(EXPANSION_DIR, 'src/generated/resources/data/mineraculouskamikotizations/modonomicon/books/wiki');
-    }
+	// 2. mineraculouskamikotizations.zip
+	let expModonomicon = path.join(EXPANSION_ROOT, 'src/generated/resources/data/mineraculous/modonomicon/books/wiki');
+	if (!fs.existsSync(expModonomicon)) {
+		expModonomicon = path.join(EXPANSION_ROOT, 'src/generated/resources/data/mineraculouskamikotizations/modonomicon/books/wiki');
+	}
 
-    await packageZip('mineraculouskamikotizations.zip', [
-        {
-            src: path.join(EXPANSION_DIR, 'src/generated/resources/assets/mineraculouskamikotizations/lang'),
-            prefix: 'lang'
-        },
-        {
-            src: expansionWikiData,
-            prefix: 'modonomicon/books/wiki'
-        },
-        {
-            src: path.join(EXPANSION_DIR, 'src/main/resources/assets/mineraculouskamikotizations/textures'),
-            prefix: 'textures'
-        }
-    ]);
+	await buildZip(path.join(STATIC_DIR, 'mineraculouskamikotizations.zip'), [
+		{
+			srcDir: path.join(EXPANSION_ROOT, 'src/generated/resources/assets/mineraculouskamikotizations/lang'),
+			zipPrefix: 'lang',
+		},
+		{
+			srcDir: expModonomicon,
+			zipPrefix: 'modonomicon/books/wiki',
+		},
+		{
+			srcDir: path.join(EXPANSION_ROOT, 'src/main/resources/assets/mineraculouskamikotizations/textures'),
+			zipPrefix: 'textures',
+		},
+	]);
 
-    console.log('Packaging complete!');
+	console.log('\nAll static wiki zips packaged and validated successfully!');
 }
 
-run().catch(err => {
-    console.error(err);
-    process.exit(1);
+main().catch((err) => {
+	console.error('Packaging failed:', err);
+	process.exit(1);
 });
